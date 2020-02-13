@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -134,7 +133,6 @@ func (h *Handler) confirmLocks(r *http.Request, src, dst string) (release func()
 	}
 
 	ih, ok := parseIfHeader(hdr)
-	log.Printf("IF: %+v", ih)
 	if !ok {
 		return nil, http.StatusBadRequest, errInvalidIfHeader
 	}
@@ -564,7 +562,6 @@ func (h *Handler) handlePropfind(w http.ResponseWriter, r *http.Request) (status
 	ctx := r.Context()
 	fi, err := h.FileSystem.Stat(ctx, reqPath)
 	if err != nil {
-		log.Printf("STAT: %v", err)
 		if os.IsNotExist(err) {
 			return http.StatusNotFound, err
 		}
@@ -657,7 +654,7 @@ func (h *Handler) handleProppatch(w http.ResponseWriter, r *http.Request) (statu
 	if err != nil {
 		return status, err
 	}
-	log.Printf("PATCHES: %+v", patches)
+
 	pstats, err := patch(ctx, h.FileSystem, h.LockSystem, reqPath, patches)
 	if err != nil {
 		if os.IsPermission(err) {
@@ -694,7 +691,7 @@ func makePropstatResponse(href string, pstats []Propstat) *response {
 			Error:               xmlErr,
 		})
 	}
-	log.Printf("RESPONSE: %+v", resp)
+
 	return &resp
 }
 
