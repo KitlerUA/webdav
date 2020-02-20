@@ -6,6 +6,7 @@
 package webdav
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -39,6 +40,12 @@ func (h *Handler) stripPrefix(p string) (string, int, error) {
 	}
 	return p, http.StatusNotFound, errPrefixMismatch
 }
+
+type CtxKey int
+
+const (
+	CtxError = iota + 1
+)
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	status, err := http.StatusBadRequest, errUnsupportedMethod
@@ -76,6 +83,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if status != http.StatusNoContent {
 			w.Write([]byte(StatusText(status)))
 		}
+	}
+	if err != nil {
+		ctx := context.WithValue(r.Context(), CtxError, StatusText(status))
+		*r = *r.WithContext(ctx)
 	}
 	if h.Logger != nil {
 		h.Logger(r, err)
