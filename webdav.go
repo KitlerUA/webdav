@@ -85,6 +85,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err != nil {
+		// TODO: check if value already set (for more verbose errors that set in handlers)
 		ctx := context.WithValue(r.Context(), CtxError, StatusText(status))
 		*r = *r.WithContext(ctx)
 	}
@@ -702,7 +703,6 @@ func makePropstatResponse(href string, pstats []Propstat) *response {
 			Error:               xmlErr,
 		})
 	}
-
 	return &resp
 }
 

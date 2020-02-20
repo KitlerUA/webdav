@@ -8,7 +8,6 @@ import (
 	"context"
 	"encoding/xml"
 	"io"
-	"log"
 	"net/http"
 	"os"
 	"path"
@@ -791,7 +790,6 @@ func walkFS(ctx context.Context, fs FileSystem, depth int, name string, info os.
 	// Read directory names.
 	f, err := fs.OpenFile(ctx, name, os.O_RDONLY, 0)
 	if err != nil {
-		log.Printf("OPEN FILE %s: %v", name, err)
 		return walkFn(name, info, err)
 	}
 	fileInfos, err := f.Readdir(0)
