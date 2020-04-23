@@ -6,7 +6,6 @@
 package webdav
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -40,12 +39,6 @@ func (h *Handler) stripPrefix(p string) (string, int, error) {
 	}
 	return p, http.StatusNotFound, errPrefixMismatch
 }
-
-type CtxKey int
-
-const (
-	CtxError = iota + 1
-)
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	status, err := http.StatusBadRequest, errUnsupportedMethod
@@ -86,8 +79,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		// TODO: check if value already set (for more verbose errors that set in handlers)
-		ctx := context.WithValue(r.Context(), CtxError, StatusText(status))
-		*r = *r.WithContext(ctx)
+		setError(r, http.StatusText(status))
 	}
 	if h.Logger != nil {
 		h.Logger(r, err)
@@ -209,6 +201,9 @@ func (h *Handler) handleGetHeadPost(w http.ResponseWriter, r *http.Request) (sta
 	if err != nil {
 		return status, err
 	}
+
+	setValue(r, pathValue{Path: reqPath})
+
 	// TODO: check locks for read-only access??
 	ctx := r.Context()
 	f, err := h.FileSystem.OpenFile(ctx, reqPath, os.O_RDONLY, 0)
@@ -241,6 +236,9 @@ func (h *Handler) handleDelete(w http.ResponseWriter, r *http.Request) (status i
 	if err != nil {
 		return status, err
 	}
+
+	setValue(r, pathValue{Path: reqPath})
+
 	release, status, err := h.confirmLocks(r, reqPath, "")
 	if err != nil {
 		return status, err
@@ -277,6 +275,9 @@ func (h *Handler) handlePut(w http.ResponseWriter, r *http.Request) (status int,
 	if err != nil {
 		return status, err
 	}
+
+	setValue(r, pathValue{Path: reqPath})
+
 	release, status, err := h.confirmLocks(r, reqPath, "")
 	if err != nil {
 		return status, err
@@ -351,6 +352,9 @@ func (h *Handler) handleMkcol(w http.ResponseWriter, r *http.Request) (status in
 	if err != nil {
 		return status, err
 	}
+
+	setValue(r, pathValue{Path: reqPath})
+
 	release, status, err := h.confirmLocks(r, reqPath, "")
 	if err != nil {
 		return status, err
@@ -396,6 +400,8 @@ func (h *Handler) handleCopyMove(w http.ResponseWriter, r *http.Request) (status
 	if err != nil {
 		return status, err
 	}
+
+	setValue(r, srcDstValue{From: src, To: dst})
 
 	if dst == "" {
 		return http.StatusBadGateway, errInvalidDestination
@@ -473,6 +479,9 @@ func (h *Handler) handleLock(w http.ResponseWriter, r *http.Request) (retStatus 
 		if token == "" {
 			return http.StatusBadRequest, errInvalidLockToken
 		}
+
+		setValue(r, idValue{ID: token})
+
 		ld, err = h.LockSystem.Refresh(now, token, duration)
 		if err != nil {
 			if err == ErrNoSuchLock {
@@ -497,6 +506,9 @@ func (h *Handler) handleLock(w http.ResponseWriter, r *http.Request) (retStatus 
 		if err != nil {
 			return status, err
 		}
+
+		setValue(r, pathValue{Path: reqPath})
+
 		ld = LockDetails{
 			Root:      reqPath,
 			Duration:  duration,
@@ -552,6 +564,8 @@ func (h *Handler) handleUnlock(w http.ResponseWriter, r *http.Request) (status i
 	}
 	t = t[1 : len(t)-1]
 
+	setValue(r, idValue{ID: t})
+
 	switch err = h.LockSystem.Unlock(time.Now(), t); err {
 	case nil:
 		return http.StatusNoContent, err
@@ -571,6 +585,9 @@ func (h *Handler) handlePropfind(w http.ResponseWriter, r *http.Request) (status
 	if err != nil {
 		return status, err
 	}
+
+	setValue(r, pathValue{Path: reqPath})
+
 	ctx := r.Context()
 	fi, err := h.FileSystem.Stat(ctx, reqPath)
 	if err != nil {
@@ -645,6 +662,9 @@ func (h *Handler) handleProppatch(w http.ResponseWriter, r *http.Request) (statu
 	if err != nil {
 		return status, err
 	}
+
+	setValue(r, pathValue{Path: reqPath})
+
 	release, status, err := h.confirmLocks(r, reqPath, "")
 	if err != nil {
 		return status, err
