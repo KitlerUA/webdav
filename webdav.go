@@ -3,7 +3,7 @@
 // license that can be found in the LICENSE file.
 
 // Package webdav provides a WebDAV server implementation.
-package webdav // import "golang.org/x/net/webdav"
+package webdav
 
 import (
 	"errors"
@@ -14,6 +14,7 @@ import (
 	"os"
 	"path"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -75,6 +76,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if status != http.StatusNoContent {
 			w.Write([]byte(StatusText(status)))
 		}
+	}
+	if err != nil {
+		// TODO: check if value already set (for more verbose errors that set in handlers)
+		setError(r, http.StatusText(status))
 	}
 	if h.Logger != nil {
 		h.Logger(r, err)
@@ -196,10 +201,16 @@ func (h *Handler) handleGetHeadPost(w http.ResponseWriter, r *http.Request) (sta
 	if err != nil {
 		return status, err
 	}
+
+	setValue(r, pathValue{Path: reqPath})
+
 	// TODO: check locks for read-only access??
 	ctx := r.Context()
 	f, err := h.FileSystem.OpenFile(ctx, reqPath, os.O_RDONLY, 0)
 	if err != nil {
+		if os.IsPermission(err) {
+			return http.StatusForbidden, err
+		}
 		return http.StatusNotFound, err
 	}
 	defer f.Close()
@@ -225,6 +236,9 @@ func (h *Handler) handleDelete(w http.ResponseWriter, r *http.Request) (status i
 	if err != nil {
 		return status, err
 	}
+
+	setValue(r, pathValue{Path: reqPath})
+
 	release, status, err := h.confirmLocks(r, reqPath, "")
 	if err != nil {
 		return status, err
@@ -242,9 +256,15 @@ func (h *Handler) handleDelete(w http.ResponseWriter, r *http.Request) (status i
 		if os.IsNotExist(err) {
 			return http.StatusNotFound, err
 		}
+		if os.IsPermission(err) {
+			return http.StatusForbidden, err
+		}
 		return http.StatusMethodNotAllowed, err
 	}
 	if err := h.FileSystem.RemoveAll(ctx, reqPath); err != nil {
+		if os.IsPermission(err) {
+			return http.StatusForbidden, err
+		}
 		return http.StatusMethodNotAllowed, err
 	}
 	return http.StatusNoContent, nil
@@ -255,6 +275,9 @@ func (h *Handler) handlePut(w http.ResponseWriter, r *http.Request) (status int,
 	if err != nil {
 		return status, err
 	}
+
+	setValue(r, pathValue{Path: reqPath})
+
 	release, status, err := h.confirmLocks(r, reqPath, "")
 	if err != nil {
 		return status, err
@@ -266,6 +289,17 @@ func (h *Handler) handlePut(w http.ResponseWriter, r *http.Request) (status int,
 
 	f, err := h.FileSystem.OpenFile(ctx, reqPath, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0666)
 	if err != nil {
+		if os.IsPermission(err) {
+			return http.StatusForbidden, err
+		}
+		if e, ok := err.(*os.PathError); ok {
+			if e.Err == syscall.ENOSPC {
+				return http.StatusInsufficientStorage, err
+			}
+			if e.Err == syscall.EDQUOT {
+				return http.StatusForbidden, err
+			}
+		}
 		return http.StatusNotFound, err
 	}
 	_, copyErr := io.Copy(f, r.Body)
@@ -273,12 +307,36 @@ func (h *Handler) handlePut(w http.ResponseWriter, r *http.Request) (status int,
 	closeErr := f.Close()
 	// TODO(rost): Returning 405 Method Not Allowed might not be appropriate.
 	if copyErr != nil {
+		if e, ok := err.(*os.PathError); ok {
+			if e.Err == syscall.ENOSPC {
+				return http.StatusInsufficientStorage, err
+			}
+			if e.Err == syscall.EDQUOT {
+				return http.StatusForbidden, err
+			}
+		}
 		return http.StatusMethodNotAllowed, copyErr
 	}
 	if statErr != nil {
+		if e, ok := err.(*os.PathError); ok {
+			if e.Err == syscall.ENOSPC {
+				return http.StatusInsufficientStorage, err
+			}
+			if e.Err == syscall.EDQUOT {
+				return http.StatusForbidden, err
+			}
+		}
 		return http.StatusMethodNotAllowed, statErr
 	}
 	if closeErr != nil {
+		if e, ok := err.(*os.PathError); ok {
+			if e.Err == syscall.ENOSPC {
+				return http.StatusInsufficientStorage, err
+			}
+			if e.Err == syscall.EDQUOT {
+				return http.StatusForbidden, err
+			}
+		}
 		return http.StatusMethodNotAllowed, closeErr
 	}
 	etag, err := findETag(ctx, h.FileSystem, h.LockSystem, reqPath, fi)
@@ -294,6 +352,9 @@ func (h *Handler) handleMkcol(w http.ResponseWriter, r *http.Request) (status in
 	if err != nil {
 		return status, err
 	}
+
+	setValue(r, pathValue{Path: reqPath})
+
 	release, status, err := h.confirmLocks(r, reqPath, "")
 	if err != nil {
 		return status, err
@@ -306,6 +367,9 @@ func (h *Handler) handleMkcol(w http.ResponseWriter, r *http.Request) (status in
 		return http.StatusUnsupportedMediaType, nil
 	}
 	if err := h.FileSystem.Mkdir(ctx, reqPath, 0777); err != nil {
+		if os.IsPermission(err) {
+			return http.StatusForbidden, err
+		}
 		if os.IsNotExist(err) {
 			return http.StatusConflict, err
 		}
@@ -336,6 +400,8 @@ func (h *Handler) handleCopyMove(w http.ResponseWriter, r *http.Request) (status
 	if err != nil {
 		return status, err
 	}
+
+	setValue(r, srcDstValue{From: src, To: dst})
 
 	if dst == "" {
 		return http.StatusBadGateway, errInvalidDestination
@@ -413,6 +479,9 @@ func (h *Handler) handleLock(w http.ResponseWriter, r *http.Request) (retStatus 
 		if token == "" {
 			return http.StatusBadRequest, errInvalidLockToken
 		}
+
+		setValue(r, idValue{ID: token})
+
 		ld, err = h.LockSystem.Refresh(now, token, duration)
 		if err != nil {
 			if err == ErrNoSuchLock {
@@ -437,6 +506,9 @@ func (h *Handler) handleLock(w http.ResponseWriter, r *http.Request) (retStatus 
 		if err != nil {
 			return status, err
 		}
+
+		setValue(r, pathValue{Path: reqPath})
+
 		ld = LockDetails{
 			Root:      reqPath,
 			Duration:  duration,
@@ -492,6 +564,8 @@ func (h *Handler) handleUnlock(w http.ResponseWriter, r *http.Request) (status i
 	}
 	t = t[1 : len(t)-1]
 
+	setValue(r, idValue{ID: t})
+
 	switch err = h.LockSystem.Unlock(time.Now(), t); err {
 	case nil:
 		return http.StatusNoContent, err
@@ -511,11 +585,17 @@ func (h *Handler) handlePropfind(w http.ResponseWriter, r *http.Request) (status
 	if err != nil {
 		return status, err
 	}
+
+	setValue(r, pathValue{Path: reqPath})
+
 	ctx := r.Context()
 	fi, err := h.FileSystem.Stat(ctx, reqPath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return http.StatusNotFound, err
+		}
+		if os.IsPermission(err) {
+			return http.StatusForbidden, err
 		}
 		return http.StatusMethodNotAllowed, err
 	}
@@ -566,6 +646,9 @@ func (h *Handler) handlePropfind(w http.ResponseWriter, r *http.Request) (status
 	walkErr := walkFS(ctx, h.FileSystem, depth, reqPath, fi, walkFn)
 	closeErr := mw.close()
 	if walkErr != nil {
+		if os.IsPermission(err) {
+			return http.StatusForbidden, walkErr
+		}
 		return http.StatusInternalServerError, walkErr
 	}
 	if closeErr != nil {
@@ -579,6 +662,9 @@ func (h *Handler) handleProppatch(w http.ResponseWriter, r *http.Request) (statu
 	if err != nil {
 		return status, err
 	}
+
+	setValue(r, pathValue{Path: reqPath})
+
 	release, status, err := h.confirmLocks(r, reqPath, "")
 	if err != nil {
 		return status, err
@@ -588,6 +674,9 @@ func (h *Handler) handleProppatch(w http.ResponseWriter, r *http.Request) (statu
 	ctx := r.Context()
 
 	if _, err := h.FileSystem.Stat(ctx, reqPath); err != nil {
+		if os.IsPermission(err) {
+			return http.StatusForbidden, err
+		}
 		if os.IsNotExist(err) {
 			return http.StatusNotFound, err
 		}
@@ -597,8 +686,12 @@ func (h *Handler) handleProppatch(w http.ResponseWriter, r *http.Request) (statu
 	if err != nil {
 		return status, err
 	}
+
 	pstats, err := patch(ctx, h.FileSystem, h.LockSystem, reqPath, patches)
 	if err != nil {
+		if os.IsPermission(err) {
+			return http.StatusForbidden, err
+		}
 		return http.StatusInternalServerError, err
 	}
 	mw := multistatusWriter{w: w}

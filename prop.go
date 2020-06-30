@@ -131,7 +131,7 @@ var liveProps = map[xml.Name]struct {
 		dir: true,
 	},
 	{Space: "DAV:", Local: "creationdate"}: {
-		findFn: nil,
+		findFn: findCreationDate,
 		dir:    false,
 	},
 	{Space: "DAV:", Local: "getcontentlanguage"}: {
@@ -167,22 +167,28 @@ var liveProps = map[xml.Name]struct {
 // Each Propstat has a unique status and each property name will only be part
 // of one Propstat element.
 func props(ctx context.Context, fs FileSystem, ls LockSystem, name string, pnames []xml.Name) ([]Propstat, error) {
-	f, err := fs.OpenFile(ctx, name, os.O_RDONLY, 0)
+	fi, err := fs.Stat(ctx, name)
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
-	fi, err := f.Stat()
-	if err != nil {
-		return nil, err
-	}
+
 	isDir := fi.IsDir()
 
 	var deadProps map[xml.Name]Property
-	if dph, ok := f.(DeadPropsHolder); ok {
-		deadProps, err = dph.DeadProps()
-		if err != nil {
+
+	f, err := fs.OpenFile(ctx, name, os.O_RDONLY, 0)
+	if err != nil {
+		if !os.IsPermission(err) {
 			return nil, err
+		}
+	} else {
+		defer f.Close()
+
+		if dph, ok := f.(DeadPropsHolder); ok {
+			deadProps, err = dph.DeadProps()
+			if err != nil {
+				return nil, err
+			}
 		}
 	}
 
@@ -215,22 +221,28 @@ func props(ctx context.Context, fs FileSystem, ls LockSystem, name string, pname
 
 // Propnames returns the property names defined for resource name.
 func propnames(ctx context.Context, fs FileSystem, ls LockSystem, name string) ([]xml.Name, error) {
-	f, err := fs.OpenFile(ctx, name, os.O_RDONLY, 0)
+	fi, err := fs.Stat(ctx, name)
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
-	fi, err := f.Stat()
-	if err != nil {
-		return nil, err
-	}
+
 	isDir := fi.IsDir()
 
 	var deadProps map[xml.Name]Property
-	if dph, ok := f.(DeadPropsHolder); ok {
-		deadProps, err = dph.DeadProps()
-		if err != nil {
+
+	f, err := fs.OpenFile(ctx, name, os.O_RDONLY, 0)
+	if err != nil {
+		if !os.IsPermission(err) {
 			return nil, err
+		}
+	} else {
+		defer f.Close()
+
+		if dph, ok := f.(DeadPropsHolder); ok {
+			deadProps, err = dph.DeadProps()
+			if err != nil {
+				return nil, err
+			}
 		}
 	}
 
@@ -400,6 +412,8 @@ type ContentTyper interface {
 	ContentType(ctx context.Context) (string, error)
 }
 
+const defaultContentType = "application/octet-stream"
+
 func findContentType(ctx context.Context, fs FileSystem, ls LockSystem, name string, fi os.FileInfo) (string, error) {
 	if do, ok := fi.(ContentTyper); ok {
 		ctype, err := do.ContentType(ctx)
@@ -407,16 +421,21 @@ func findContentType(ctx context.Context, fs FileSystem, ls LockSystem, name str
 			return ctype, err
 		}
 	}
-	f, err := fs.OpenFile(ctx, name, os.O_RDONLY, 0)
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
-	// This implementation is based on serveContent's code in the standard net/http package.
+
 	ctype := mime.TypeByExtension(filepath.Ext(name))
 	if ctype != "" {
 		return ctype, nil
 	}
+
+	f, err := fs.OpenFile(ctx, name, os.O_RDONLY, 0)
+	if err != nil {
+		if os.IsPermission(err) {
+			return defaultContentType, nil
+		}
+		return "", err
+	}
+	defer f.Close()
+	// This implementation is based on serveContent's code in the standard net/http package.
 	// Read a chunk to decide between utf-8 text and binary.
 	var buf [512]byte
 	n, err := io.ReadFull(f, buf[:])
@@ -425,7 +444,7 @@ func findContentType(ctx context.Context, fs FileSystem, ls LockSystem, name str
 	}
 	ctype = http.DetectContentType(buf[:n])
 	// Rewind file.
-	_, err = f.Seek(0, os.SEEK_SET)
+	_, err = f.Seek(0, io.SeekStart)
 	return ctype, err
 }
 
